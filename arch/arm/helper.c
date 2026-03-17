@@ -853,11 +853,18 @@ void switch_mode(CPUState *env, int mode)
     }
 
     i = bank_number(old_mode);
+    if(unlikely(i < 0)) {
+        return; // unreachable — bank_number already calls cpu_abort
+    }
     env->banked_r13[i] = env->regs[13];
     env->banked_r14[i] = env->regs[14];
     env->banked_spsr[i] = env->spsr;
 
     i = bank_number(mode);
+    if(unlikely(i < 0)) {
+        return; // unreachable — bank_number already calls cpu_abort
+    }
+
     env->regs[13] = env->banked_r13[i];
     env->regs[14] = env->banked_r14[i];
     env->spsr = env->banked_spsr[i];
