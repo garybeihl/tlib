@@ -9404,6 +9404,15 @@ static void disas_arm_insn(CPUState *env, DisasContext *s)
                 break;
             default:
             illegal_op:
+                {
+                    static int illegal_log_count = 0;
+                    if(illegal_log_count < 20) {
+                        tlib_printf(LOG_LEVEL_WARNING,
+                            "ILLEGAL_OP: pc=0x%08x insn=0x%08x",
+                            (uint32_t)(s->base.pc - 4), insn);
+                        illegal_log_count++;
+                    }
+                }
                 gen_exception_insn(s, 4, EXCP_UDEF);
                 LOCK_TB(s->base.tb);
                 break;

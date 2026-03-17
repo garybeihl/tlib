@@ -1845,6 +1845,17 @@ ram_addr_t ram_addr_from_host(void *ptr)
 void notdirty_mem_writeb(void *opaque, target_phys_addr_t ram_addr, uint32_t val)
 {
     PhysPageDesc *p = phys_page_find(ram_addr >> TARGET_PAGE_BITS);
+    /* DEBUG: Watchpoint for writes to kernel .text range */
+    if(ram_addr >= 0x80100000 && ram_addr < 0x81009688) {
+        static int wp_b_count = 0;
+        if(wp_b_count < 20) {
+            tlib_printf(LOG_LEVEL_WARNING,
+                "WRITE_TO_TEXT_B: phys=0x%08x val=0x%02x PC=0x%08x vaddr=0x%08x",
+                (uint32_t)ram_addr, val & 0xff,
+                (uint32_t)CPU_PC(cpu), (uint32_t)cpu->mem_io_vaddr);
+            wp_b_count++;
+        }
+    }
     if(!p->flags.dirty) {
         tb_invalidate_phys_page_fast(ram_addr, 1);
     }
@@ -1859,6 +1870,17 @@ void notdirty_mem_writeb(void *opaque, target_phys_addr_t ram_addr, uint32_t val
 void notdirty_mem_writew(void *opaque, target_phys_addr_t ram_addr, uint32_t val)
 {
     PhysPageDesc *p = phys_page_find(ram_addr >> TARGET_PAGE_BITS);
+    /* DEBUG: Watchpoint for writes to kernel .text range */
+    if(ram_addr >= 0x80100000 && ram_addr < 0x81009688) {
+        static int wp_w_count = 0;
+        if(wp_w_count < 20) {
+            tlib_printf(LOG_LEVEL_WARNING,
+                "WRITE_TO_TEXT_W: phys=0x%08x val=0x%04x PC=0x%08x vaddr=0x%08x",
+                (uint32_t)ram_addr, val & 0xffff,
+                (uint32_t)CPU_PC(cpu), (uint32_t)cpu->mem_io_vaddr);
+            wp_w_count++;
+        }
+    }
     if(!p->flags.dirty) {
         tb_invalidate_phys_page_fast(ram_addr, 2);
     }
@@ -1873,6 +1895,18 @@ void notdirty_mem_writew(void *opaque, target_phys_addr_t ram_addr, uint32_t val
 void notdirty_mem_writel(void *opaque, target_phys_addr_t ram_addr, uint32_t val)
 {
     PhysPageDesc *p = phys_page_find(ram_addr >> TARGET_PAGE_BITS);
+    /* DEBUG: Watchpoint for writes to kernel .text range */
+    if(ram_addr >= 0x80100000 && ram_addr < 0x81009688) {
+        static int wp_count = 0;
+        if(wp_count < 50) {
+            uint32_t old_val = ldl_p(get_ram_ptr(ram_addr));
+            tlib_printf(LOG_LEVEL_WARNING,
+                "WRITE_TO_TEXT: phys=0x%08x val=0x%08x old=0x%08x PC=0x%08x vaddr=0x%08x",
+                (uint32_t)ram_addr, val, old_val,
+                (uint32_t)CPU_PC(cpu), (uint32_t)cpu->mem_io_vaddr);
+            wp_count++;
+        }
+    }
     if(!p->flags.dirty) {
         tb_invalidate_phys_page_fast(ram_addr, 2);
     }
@@ -2045,10 +2079,37 @@ static uint32_t ldl_phys_aligned(target_phys_addr_t addr)
             addr = (addr & ~TARGET_PAGE_MASK) + p->region_offset;
         }
         val = tlib_read_double_word(addr, cpustate);
+        /* DEBUG: log when DRAM reads go through I/O path */
+        if(val == 0xFFFFFFFF && (addr >= 0x80000000 && addr < 0xC0000000)) {
+            static int io_dbg_count = 0;
+            if(io_dbg_count < 5) {
+                tlib_printf(LOG_LEVEL_WARNING,
+                    "ldl_phys IO path: addr=0x%08x p=%s pd=0x%lx val=0x%08x",
+                    (uint32_t)addr, p ? "found" : "NULL", (unsigned long)pd, val);
+                io_dbg_count++;
+            }
+        }
     } else {
         /* RAM case */
         ptr = get_ram_ptr(pd & TARGET_PAGE_MASK) + (addr & ~TARGET_PAGE_MASK);
         val = ldl_p(ptr);
+        /* DEBUG: log when DRAM reads from RAM path return suspect value */
+        if(val == 0xFFFFFFFF && (addr >= 0x80000000 && addr < 0xC0000000)) {
+            static int ram_dbg_count = 0;
+            if(ram_dbg_count < 10) {
+                /* Compare with sysbus callback read at the same moment */
+                uint32_t sysbus_val = tlib_read_double_word(addr, cpustate);
+                /* Read surrounding words from host pointer */
+                uint32_t *w = (uint32_t *)ptr;
+                tlib_printf(LOG_LEVEL_WARNING,
+                    "ldl_phys MISMATCH: addr=0x%08x pd=0x%lx ptr=%p ram=0x%08x sysbus=0x%08x",
+                    (uint32_t)addr, (unsigned long)pd, ptr, val, sysbus_val);
+                tlib_printf(LOG_LEVEL_WARNING,
+                    "  host mem[%p]: %08x %08x [%08x] %08x %08x %08x %08x %08x",
+                    w - 2, w[-2], w[-1], w[0], w[1], w[2], w[3], w[4], w[5]);
+                ram_dbg_count++;
+            }
+        }
     }
     return val;
 }
