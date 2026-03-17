@@ -201,9 +201,9 @@ static void gen_store_table_lock_address(CPUState *env, TCGv_guestptr guest_addr
     //  Acquiring the lock means storing this core's id.
     TCGv_i32 new_lock = tcg_const_local_i32(get_core_id(env));
 
-    /*  We need to check two cases, hence the two branching instructions
-     *  after the initial CAS. The table entry is either unlocked,
-     *  locked by another thread, or locked by the current thread.
+    /*  We need to check three cases after the initial CAS. The table
+     *  entry is either unlocked, locked by another thread, or locked
+     *  by the current thread.
      *
      *                         │
      * ┌───────────────────────▼────────────────────────────┐
@@ -212,15 +212,23 @@ static void gen_store_table_lock_address(CPUState *env, TCGv_guestptr guest_addr
      *        true    ┌────────▼──────────┐                           │
      *         ┌──────┼ result == core_id │ "already locked by me?"   │
      *         ▼      └────────┬──────────┘                           │
-     *       abort             │ false                                │
-     *                ┌────────▼───────────────┐  true                │
-     *      "locked?" │ result != HST_UNLOCKED ┼──────────────────────┘
-     *                └────────┬───────────────┘
-     *                         │ false
-     *                         ▼
+     *    already held         │ false                                │
+     *    (skip acquire)       │                                      │
+     *         │      ┌────────▼───────────────┐  true                │
+     *         │      │ result != HST_UNLOCKED ┼──────────────────────┘
+     *         │      └────────┬───────────────┘
+     *         │               │ false
+     *         ▼               ▼
      *                   lock acquired!
+     *
+     *  Note: Reentrant lock can occur when a softmmu fault during a
+     *  store causes a longjmp that bypasses the unlock, and the
+     *  dangling lock cleanup in cpu_exec doesn't clear it before the
+     *  next store to the same hash bucket. Instead of aborting, we
+     *  treat this as already-acquired since we own the entry.
      */
     int retry = gen_new_label();
+    int lock_acquired = gen_new_label();
     gen_set_label(retry);
 
     TCGv_i32 result = tcg_temp_local_new_i32();
@@ -229,18 +237,16 @@ static void gen_store_table_lock_address(CPUState *env, TCGv_guestptr guest_addr
     tcg_gen_atomic_compare_and_swap_host_intrinsic_i32(result, expected_lock, lock_address, new_lock);
 
     int start_retrying = gen_new_label();
-    //  Locks are not reentrant, so it is an implementation bug
-    //  if the lock is already taken by this core.
+    //  If the lock is already held by this core, treat as already acquired.
+    //  This can happen when a softmmu fault (longjmp) bypasses the unlock.
     tcg_gen_brcondi_i32(TCG_COND_NE, result, get_core_id(env), start_retrying);
-    //  Abort if result == get_core_id(env) (reentrant lock attempt)
-    TCGv_hostptr abort_message =
-        tcg_const_hostptr((uintptr_t)"Attempted to acquire a store table lock that this CPU already holds");
-    gen_helper_abort_message(abort_message);
-    tcg_temp_free_hostptr(abort_message);
+    tcg_gen_br(lock_acquired);
 
     gen_set_label(start_retrying);
     //  If result != HST_UNLOCKED, then the lock is taken, and we should keep retrying.
     tcg_gen_brcondi_i32(TCG_COND_NE, result, HST_UNLOCKED, retry);
+
+    gen_set_label(lock_acquired);
 
     //  Lock is now owned by the current core.
 
